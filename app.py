@@ -2,364 +2,429 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.express as px
+from scipy.stats import norm
 
-# ================= PAGE CONFIG =================
+# =====================================================
+# PAGE CONFIG
+# =====================================================
 st.set_page_config(
     page_title="Investment Risk Management Dashboard",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# ================= THEME =================
-st.markdown("""
-<style>
-.block-container { padding-top: 0.8rem; }
-section[data-testid="stSidebar"] > div { padding-top: 0.6rem; }
-header {visibility: hidden;}
-footer {visibility: hidden;}
-[data-testid="stSidebar"] { background-color: #111827; }
-</style>
-""", unsafe_allow_html=True)
+# =====================================================
+# TITLE
+# =====================================================
+st.title("📊 5-Year Portfolio Risk Analysis (2021–2025)")
+st.caption("Comprehensive Risk & Return Evaluation using Annual Open–Close Prices")
 
-# ================= TITLE =================
-st.title("📊 Investment Risk Management & Diversification Dashboard")
-st.caption("Risk Analytics | Portfolio Comparison | Indian Equity Market Data")
+# =====================================================
+# SIDEBAR CONTROLS
+# =====================================================
+st.sidebar.header("⚙ Portfolio Controls")
 
-# ================= LOAD RAW DATA =================
+rf_rate = st.sidebar.slider(
+    "Risk-Free Rate (Annual %)", 3.0, 8.0, 6.2, 0.1
+) / 100
+
+var_conf = st.sidebar.selectbox("VaR Confidence Level", ["90%", "95%", "99%"])
+var_level = {"90%": 10, "95%": 5, "99%": 1}[var_conf]
+
+# =====================================================
+# LOAD DATA (Streamlit-safe caching)
+# =====================================================
 @st.cache
 def load_data():
-    try:
-        df = pd.read_excel("RawPrices.xlsx")
-    except Exception:
-        df = pd.read_csv("RawPrices.csv")
-
+    df = pd.read_excel("Opening_Closing_Stock_Data_2021_2025.xlsx")
     df.columns = df.columns.str.strip()
+    df["Asset"] = df["Asset"].str.strip()
 
-    # ✅ FIX DATE PARSING
-    if np.issubdtype(df["Date"].dtype, np.number):
-        df["Date"] = pd.to_datetime(df["Date"], origin="1899-12-30", unit="D")
-    else:
-        df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
-
-    # Drop invalid dates
-    df = df.dropna(subset=["Date"])
-
-    df.set_index("Date", inplace=True)
+    for col in df.columns:
+        if col != "Asset":
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     return df
 
-prices_full = load_data()
+df = load_data()
+years = ["2021", "2022", "2023", "2024", "2025"]
 
-# FORCE SORT + CLEAN INDEX
-prices_full = prices_full.sort_index()
-prices_full = prices_full[~prices_full.index.duplicated()]
+# =====================================================
+# ANNUAL RETURNS
+# =====================================================
+annual_returns = {}
 
-market_index = "NIFTY 50"
+for _, row in df.iterrows():
+    asset = row["Asset"]
+    returns = []
 
-stocks = prices_full.columns.drop("NIFTY 50")
+    for y in years:
+        o = row.get(f"{y} Open (Rs)")
+        c = row.get(f"{y} Close (Rs)")
+        if pd.notna(o) and pd.notna(c) and o != 0:
+            returns.append((c - o) / o)
+        else:
+            returns.append(0.0)  # avoid NaN in UI
 
-if market_index not in prices_full.columns:
-    st.error("❌ Market index 'NIFTY 50' not found in dataset")
-    st.stop()
+    annual_returns[asset] = returns
 
-# ================= SIDEBAR =================
-st.sidebar.subheader("📅 Date Range")
+annual_returns_df = pd.DataFrame(annual_returns, index=years).T
 
-# Dataset boundaries
-data_start = prices_full.index.min().date()
-data_end = prices_full.index.max().date()
+st.subheader("📅 Annual Asset Returns (%)")
+st.dataframe((annual_returns_df * 100).round(2))
 
-# Default dates (from file)
-default_start = pd.to_datetime("2025-12-31").date()
-default_end = pd.to_datetime("2026-01-10").date()
+# =====================================================
+# PORTFOLIOS
+# =====================================================
+PORTFOLIOS = {
+    "Young Investor": {
+        "HBL Power": 0.15, "Mazagon Dock": 0.15, "KPIT Tech": 0.15,
+        "Trent Ltd": 0.15, "Persistent": 0.15,
+        "Reliance": 0.10, "Gold BeES (ETF)": 0.15
+    },
+    "Middle-aged Investor": {
+        "Reliance": 0.20, "TCS": 0.20, "HDFC Bank": 0.20,
+        "Persistent": 0.15, "KPIT Tech": 0.15,
+        "Gold BeES (ETF)": 0.10
+    },
+    "Senior Investor": {
+        "HDFC Bank": 0.30, "TCS": 0.25,
+        "Reliance": 0.20, "Gold BeES (ETF)": 0.25
+    }
+}
 
-# Ensure defaults are within data range
-default_start = max(default_start, data_start)
-default_end = min(default_end, data_end)
-
-start_date, end_date = st.sidebar.date_input(
-    "Select Analysis Period",
-    value=(default_start, default_end),
-    min_value=data_start,
-    max_value=data_end
-)
-
-# Convert back to pandas datetime
-start_date = pd.to_datetime(start_date)
-end_date = pd.to_datetime(end_date)
-
-# Filter data
-prices = prices_full.loc[start_date:end_date]
-
-# Graceful handling of missing data
-if prices.empty or prices.shape[0] < 2:
-    st.warning(
-        "⚠️ We don't have sufficient data for the selected date range.\n\n"
-        f"Available data is from **{data_start}** to **{data_end}**.\n\n"
-        "Please adjust the date range."
-    )
-    st.stop()
-
-st.sidebar.subheader("📁 Portfolios to Compare")
-portfolio_types = st.sidebar.multiselect(
+selected = st.sidebar.multiselect(
     "Select Portfolios",
-    ["Young Investor", "Middle-aged Investor", "Senior Investor", "Passive Index", "Custom Portfolio"],
-    default=["Young Investor", "Middle-aged Investor"]
+    list(PORTFOLIOS.keys()),
+    default=list(PORTFOLIOS.keys())
 )
 
-st.sidebar.subheader("⚙️ Risk Parameters")
-confidence = st.sidebar.selectbox("VaR Confidence Level", ["95%", "99%"])
-confidence_level = 5 if confidence == "95%" else 1
-
-# Average 10Y Indian T-Bill Yield (2015–2025 approx)
-TBILL_10Y_AVG = 0.062   # 6.2%
-
-rf = TBILL_10Y_AVG / 252
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎚 Custom Portfolio Allocation")
-
-small = st.sidebar.slider("Small-Cap", 0.0, 1.0, 0.4, 0.05)
-mid = st.sidebar.slider("Mid-Cap", 0.0, 1.0, 0.3, 0.05)
-large = st.sidebar.slider("Large-Cap", 0.0, 1.0, 0.2, 0.05)
-mf = st.sidebar.slider("Mutual Fund", 0.0, 1.0, 0.1, 0.05)
-
-weights_norm = np.array([small, mid, large, mf])
-if weights_norm.sum() == 0:
-    weights_norm = np.array([0.4, 0.3, 0.2, 0.1])
-else:
-    weights_norm /= weights_norm.sum()
-
-
-# ================= PORTFOLIO PROFILES =================
-PORTFOLIO_PROFILES = {
-    "Young Investor": np.array([0.4, 0.3, 0.2, 0.1]),
-    "Middle-aged Investor": np.array([0.20, 0.3, 0.3, 0.2]),
-    "Senior Investor": np.array([0.05, 0.15, 0.5, 0.3]),
-    "Passive Index": np.array([0, 0, 0, 1])
-}
-
-# ================= RETURNS =================
-if prices.shape[0] < 2:
-    st.error("⚠️ Not enough data points for return calculation. Please select a wider date range.")
+if not selected:
+    st.warning("⚠ Please select at least one portfolio.")
     st.stop()
 
-returns = prices.pct_change().dropna(how="all")
+# =====================================================
+# PORTFOLIO RETURNS
+# =====================================================
+portfolio_data = {}
 
-market_return = returns[market_index]
+for p in selected:
+    total = np.zeros(len(years))
+    for asset, w in PORTFOLIOS[p].items():
+        if asset in annual_returns_df.index:
+            total += annual_returns_df.loc[asset].values * w
+    portfolio_data[p] = total
 
-# ================= CORRELATION HEATMAP =================
+portfolio_df = pd.DataFrame(portfolio_data, index=years).copy()
 
-corr_matrix = returns.corr().copy()
+st.subheader("📊 Portfolio Annual Returns (%)")
+st.dataframe((portfolio_df * 100).round(2))
 
-corr_fig = px.imshow(
-    corr_matrix,
-    text_auto=".2f",
-    aspect="auto",
-    color_continuous_scale="RdBu",
-    title="Asset Correlation Heatmap"
-)
-
-
-# ================= STOCK METRICS =================
-stock_metrics = []
-
-for s in stocks:
-    market_var = market_return.var()
-    beta = returns[s].cov(market_return) / market_var if market_var != 0 else np.nan
-    stock_metrics.append([s, returns[s].mean(), returns[s].std(), beta])
-
-stock_metrics_df = pd.DataFrame(
-    stock_metrics,
-    columns=["Stock", "Avg Return", "Volatility", "Beta"]
-)
-
-# ================= WEIGHT BUILDER =================
-def build_weights(profile):
-    w_raw = weights_norm if profile == "Custom Portfolio" else PORTFOLIO_PROFILES[profile]
-    w = {}
-    for s in stocks[:3]: w[s] = w_raw[0] / 3
-    for s in stocks[3:6]: w[s] = w_raw[1] / 3
-    for s in stocks[6:10]: w[s] = w_raw[2] / 4
-    w[market_index] = w_raw[3]
-    return pd.Series(w)
-
-weights_df = pd.DataFrame({p: build_weights(p) for p in portfolio_types})
-
-# ================= PORTFOLIO METRICS =================
-portfolio_returns = {}
+# =====================================================
+# RISK METRICS
+# =====================================================
 metrics = []
-var_es = []
 
-for p in portfolio_types:
-    pr = (returns * build_weights(p)).sum(axis=1)
-    portfolio_returns[p] = pr
+for p in portfolio_df.columns:
+    r = portfolio_df[p]
 
-    beta = pr.cov(market_return) / market_return.var()
-    sharpe = (pr.mean() * 252 - TBILL_10Y_AVG) / (pr.std() * np.sqrt(252))
-    VaR = np.percentile(pr, confidence_level)
-    ES = pr[pr <= VaR].mean()
+    mean_r = r.mean()
+    vol = r.std()
+    downside_vol = r[r < 0].std()
 
-    metrics.append([p, pr.mean(), pr.std(), beta, sharpe])
-    var_es.append([p, VaR, ES])
+    sharpe = (mean_r - rf_rate) / vol if vol > 0 else 0
+    sortino = (mean_r - rf_rate) / downside_vol if downside_vol > 0 else 0
 
-risk_metrics_df = pd.DataFrame(
-    metrics,
-    columns=["Portfolio", "Return", "Volatility", "Beta", "Sharpe"]
-)
+    VaR = np.percentile(r, var_level)
+    ES = r[r <= VaR].mean()
 
-var_es_df = pd.DataFrame(var_es, columns=["Portfolio", "VaR", "Expected Shortfall"])
+    cumulative = (1 + r).cumprod()
+    max_dd = ((cumulative / cumulative.cummax()) - 1).min()
+    CAGR = cumulative.iloc[-1] ** (1 / len(r)) - 1
 
-comparison_df = risk_metrics_df.merge(var_es_df, on="Portfolio")
-comparison_df["Bubble_Size"] = comparison_df["Sharpe"].clip(lower=0.01) * 80
+    metrics.append([
+        p,
+        mean_r * 100,
+        CAGR * 100,
+        vol * 100,
+        max_dd * 100,
+        sharpe,
+        sortino,
+        VaR * 100,
+        ES * 100
+    ])
 
-index_daily_return = market_return.mean()
-index_annual_return = index_daily_return * 252
-
-portfolio_summary = comparison_df.copy()
-portfolio_summary["Annual Return %"] = portfolio_summary["Return"] * 252 * 100
-portfolio_summary["Excess Return over T-Bill %"] = (
-    portfolio_summary["Annual Return %"] - TBILL_10Y_AVG * 100
-)
-
-# ================= MONTE CARLO SIMULATION =================
-
-def monte_carlo_simulation(returns, simulations=500, days=252):
-    mean = returns.mean()
-    std = returns.std()
-
-    simulations = np.random.normal(mean, std, (days, simulations))
-    price_paths = np.cumprod(1 + simulations, axis=0)
-
-    simulations_df = pd.DataFrame(price_paths)
-    return simulations_df
-
-mc_results = {}
-for p in portfolio_types:
-    mc_results[p] = monte_carlo_simulation(portfolio_returns[p])
-
-
-# ================= EXTRA RISK METRICS =================
-
-def max_drawdown(series):
-    cumulative = (1 + series).cumprod()
-    peak = cumulative.cummax()
-    drawdown = (cumulative - peak) / peak
-    return drawdown.min()
-
-portfolio_summary["Annual Volatility %"] = portfolio_summary["Volatility"] * np.sqrt(252) * 100
-
-portfolio_summary["Max Drawdown %"] = [
-    max_drawdown(portfolio_returns[p]) * 100 for p in portfolio_summary["Portfolio"]
-]
-
-portfolio_summary["Beats T-Bill"] = portfolio_summary["Annual Return %"] > TBILL_10Y_AVG * 100
-portfolio_summary["Beats NIFTY 50"] = portfolio_summary["Annual Return %"] > index_annual_return * 100
-
-index_row = {
-    "Portfolio": "NIFTY 50 Index",
-    "Annual Return %": index_annual_return * 100,
-    "Annual Volatility %": market_return.std() * np.sqrt(252) * 100,
-    "Sharpe": (index_annual_return - TBILL_10Y_AVG) / (market_return.std() * np.sqrt(252)),
-    "Excess Return over T-Bill %": (index_annual_return - TBILL_10Y_AVG) * 100,
-    "Max Drawdown %": max_drawdown(market_return) * 100,
-    "Beats T-Bill": True,
-    "Beats NIFTY 50": False
-}
-
-t_bill_row = {
-    "Portfolio": "10Y T-Bill (Risk Free)",
-    "Annual Return %": TBILL_10Y_AVG * 100,
-    "Annual Volatility %": 0,
-    "Sharpe": np.nan,
-    "Excess Return over T-Bill %": 0,
-    "Max Drawdown %": 0,
-    "Beats T-Bill": False,
-    "Beats NIFTY 50": False
-}
-
-portfolio_summary = pd.concat(
-    [portfolio_summary, pd.DataFrame([index_row, t_bill_row])],
-    ignore_index=True
-)
-
-# ================= TABS =================
-tabs = st.tabs([
-    "Raw Prices",
-    "Daily Returns",
-    "Market Return",
-    "Stock Risk Metrics",
-    "Portfolio Weights",
-    "Portfolio Returns",
-    "Risk Adjusted Metrics",
-    "VaR & ES",
-    "Passive vs Active",
-    "T-Bill vs Index vs Portfolio",
-    "Summary Insights"
+metrics_df = pd.DataFrame(metrics, columns=[
+    "Portfolio", "Avg Return %", "CAGR %",
+    "Volatility %", "Max Drawdown %",
+    "Sharpe Ratio", "Sortino Ratio",
+    f"VaR ({var_conf}) %", "Expected Shortfall %"
 ])
 
-tabs[0].dataframe(prices.round(2))
-tabs[1].dataframe(returns.round(4))
-tabs[2].dataframe(market_return.round(4))
-tabs[3].dataframe(stock_metrics_df.round(4))
-tabs[4].dataframe(weights_df.round(4))
+# =====================================================
+# KPI CARDS
+# =====================================================
+st.subheader("📌 KPI Comparison")
 
-tabs[5].plotly_chart(
-    px.line(pd.DataFrame(portfolio_returns), title="Portfolio Returns Comparison")
+for _, row in metrics_df.iterrows():
+    st.markdown(f"### {row['Portfolio']}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Avg Return (%)", f"{row['Avg Return %']:.2f}")
+    c2.metric("CAGR (%)", f"{row['CAGR %']:.2f}")
+    c3.metric("Volatility (%)", f"{row['Volatility %']:.2f}")
+    c4.metric("Max Drawdown (%)", f"{row['Max Drawdown %']:.2f}")
+
+# =====================================================
+# AUTO RECOMMENDATION
+# =====================================================
+best_sharpe = metrics_df.loc[metrics_df["Sharpe Ratio"].idxmax()]
+low_risk = metrics_df.loc[metrics_df["Volatility %"].idxmin()]
+high_return = metrics_df.loc[metrics_df["CAGR %"].idxmax()]
+
+st.subheader("🧠 Auto Portfolio Recommendation")
+
+st.success(f"✅ Best Risk-Adjusted: **{best_sharpe['Portfolio']}**")
+st.info(f"🛡 Lowest Risk: **{low_risk['Portfolio']}**")
+st.warning(f"🚀 Highest Return: **{high_return['Portfolio']}**")
+
+# =====================================================
+# RISK–RETURN SCATTER (NaN-safe)
+# =====================================================
+metrics_df["Sharpe Size"] = metrics_df["Sharpe Ratio"].clip(lower=0.01)
+
+fig = px.scatter(
+    metrics_df,
+    x="Volatility %",
+    y="Avg Return %",
+    size="Sharpe Size",
+    color="Portfolio",
+    title="Risk–Return Trade-off"
+)
+st.plotly_chart(fig)
+
+# =====================================================
+# CORRELATION HEATMAP
+# =====================================================
+st.subheader("🔗 Portfolio Correlation Matrix")
+
+fig = px.imshow(
+    portfolio_df.corr(),
+    text_auto=".2f",
+    color_continuous_scale="RdBu"
+)
+st.plotly_chart(fig)
+
+# =====================================================
+# FOCUS PORTFOLIO (FIXED ERROR)
+# =====================================================
+st.subheader("📈 Return Distribution & VaR")
+
+focus_portfolio = st.selectbox(
+    "Select Portfolio for Distribution Analysis",
+    portfolio_df.columns
 )
 
-tabs[6].dataframe(risk_metrics_df.round(4))
+focus_row = metrics_df[metrics_df["Portfolio"] == focus_portfolio].iloc[0]
+r = portfolio_df[focus_portfolio]
 
-tabs[7].plotly_chart(
-    px.bar(
-        var_es_df,
-        x="Portfolio",
-        y=["VaR", "Expected Shortfall"],
-        barmode="group",
-        title=f"Downside Risk Comparison ({confidence})"
+mu, sigma = r.mean(), r.std()
+
+if sigma > 0:
+    x = np.linspace(mu - 4 * sigma, mu + 4 * sigma, 400)
+    y = norm.pdf(x, mu, sigma)
+    VaR_value = np.percentile(r, var_level)
+
+    fig = px.line(
+        x=x * 100,
+        y=y,
+        labels={"x": "Return (%)", "y": "Probability Density"},
+        title=f"{focus_portfolio} – Return Distribution"
     )
+    fig.add_vline(x=mu * 100, line_dash="dash", annotation_text="Mean")
+    fig.add_vline(x=VaR_value * 100, line_color="red",
+                  annotation_text=f"VaR {var_conf}")
+    st.plotly_chart(fig)
+
+# =====================================================
+# MONTE CARLO SIMULATION
+# =====================================================
+st.subheader("📈 Monte Carlo Simulation – Future Portfolio Forecast")
+
+n_simulations = st.slider(
+    "Number of Simulations", 500, 5000, 2000, step=500
+)
+n_years = st.slider(
+    "Forecast Years", 1, 10, 5
 )
 
-tabs[8].subheader("📊 Portfolio Risk Comparison")
-tabs[8].dataframe(comparison_df.round(4))
+mean_return = r.mean()
+volatility = r.std()
 
-tabs[8].subheader("🔗 Asset Correlation Heatmap")
-tabs[8].plotly_chart(corr_fig, use_container_width=True)
+simulated_returns = np.random.normal(
+    mean_return,
+    volatility,
+    size=(n_simulations, n_years)
+)
 
-tabs[9].plotly_chart(
-    px.scatter(
-        comparison_df,
-        x="Volatility",
-        y="Return",
-        size="Bubble_Size",
-        color="Portfolio",
-        hover_data=["Sharpe", "Beta"],
-        title="Risk vs Return (Sharpe-Adjusted View)"
+simulated_cumulative = (1 + simulated_returns).cumprod(axis=1)
+
+# Convert to DataFrame for plotting
+sim_df = pd.DataFrame(
+    simulated_cumulative.T,
+    columns=[f"Sim {i}" for i in range(simulated_cumulative.shape[0])]
+).copy()
+
+fig = px.line(
+    sim_df,
+    title=f"Monte Carlo Simulation – {focus_portfolio}",
+    labels={"value": "Portfolio Value", "index": "Year"}
+)
+fig.update_traces(line=dict(width=1), opacity=0.1)
+st.plotly_chart(fig)
+
+# Monte Carlo Insights
+final_values = simulated_cumulative[:, -1]
+
+st.info(f"""
+📊 **Monte Carlo Insights ({n_years} Years)**  
+• Expected Portfolio Value: **{final_values.mean():.2f}x**  
+• Worst 5% Outcome: **{np.percentile(final_values, 5):.2f}x**  
+• Best 95% Outcome: **{np.percentile(final_values, 95):.2f}x**
+""")
+
+# =====================================================
+# CONFIDENCE CONE (MONTE CARLO)
+# =====================================================
+st.subheader("📉 Monte Carlo Confidence Cone")
+
+percentiles = [5, 25, 50, 75, 95]
+
+percentile_values = np.percentile(simulated_cumulative, percentiles, axis=0)
+
+cone_df = pd.DataFrame(
+    percentile_values.T,
+    columns=[f"P{p}" for p in percentiles]
+).copy()
+
+cone_df["Year"] = range(1, n_years + 1)
+
+fig = px.line(
+    cone_df,
+    x="Year",
+    y=[f"P{p}" for p in percentiles],
+    title=f"Confidence Cone – {focus_portfolio}",
+    labels={"value": "Portfolio Value", "variable": "Percentile"}
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# =====================================================
+# CAPM & BETA ANALYSIS
+# =====================================================
+st.subheader("🧮 CAPM & Beta Analysis")
+
+# Market proxy (average portfolio return)
+market_return = portfolio_df.mean(axis=1)
+
+covariance = np.cov(r, market_return)[0][1]
+market_variance = np.var(market_return)
+
+beta = covariance / market_variance if market_variance > 0 else 0
+
+expected_capm_return = rf_rate + beta * (market_return.mean() - rf_rate)
+
+actual_return = r.mean()
+
+capm_df = pd.DataFrame({
+    "Metric": ["Beta", "Expected Return (CAPM %)", "Actual Return (%)"],
+    "Value": [
+        round(beta, 3),
+        round(expected_capm_return * 100, 2),
+        round(actual_return * 100, 2)
+    ]
+})
+
+st.table(capm_df)
+
+# =====================================================
+# ALPHA CALCULATION
+# =====================================================
+alpha = actual_return - expected_capm_return
+
+st.subheader("📊 Alpha Analysis")
+
+st.metric(
+    label="Alpha (%)",
+    value=f"{alpha * 100:.2f}",
+    delta="Outperformance" if alpha > 0 else "Underperformance"
+)
+
+st.info(f"""
+### 📌 CAPM & Alpha Interpretation – {focus_portfolio}
+
+• **Beta:** {beta:.2f}  
+• **Expected Return (CAPM):** {expected_capm_return*100:.2f}%  
+• **Actual Return:** {actual_return*100:.2f}%  
+• **Alpha:** {alpha*100:.2f}%
+
+{"✅ Positive Alpha → Portfolio manager added value"
+ if alpha > 0 else
+ "⚠ Negative Alpha → Portfolio underperformed market expectations"}
+""")
+
+# =====================================================
+# EFFICIENT FRONTIER
+# =====================================================
+st.subheader("📈 Efficient Frontier")
+
+assets = annual_returns_df.loc[
+    annual_returns_df.index.intersection(
+        list(set().union(*[PORTFOLIOS[p].keys() for p in selected]))
     )
+]
+
+returns = assets.mean(axis=1)
+cov_matrix = assets.T.cov()
+
+n_ports = 3000
+results = np.zeros((n_ports, 3))
+
+for i in range(n_ports):
+    weights = np.random.random(len(returns))
+    weights /= np.sum(weights)
+
+    port_return = np.dot(weights, returns)
+    port_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+    sharpe = (port_return - rf_rate) / port_vol if port_vol > 0 else 0
+
+    results[i] = [port_vol * 100, port_return * 100, sharpe]
+
+ef_df = pd.DataFrame(
+    results,
+    columns=["Volatility %", "Return %", "Sharpe Ratio"]
 )
 
-for p in portfolio_types:
-    mc_df = mc_results[p].copy()
-    tabs[9].plotly_chart(
-        px.line(
-            mc_df,
-            title=f"Monte Carlo Simulation – {p}",
-            labels={"value": "Portfolio Value", "index": "Days"}
-            ),
-            use_container_width=True
-        )
-
-tabs[10].subheader("📊 Detailed Portfolio vs Index vs T-Bill Comparison")
-
-tabs[10].dataframe(
-    portfolio_summary[[
-        "Portfolio",
-        "Annual Return %",
-        "Annual Volatility %",
-        "Sharpe",
-        "Max Drawdown %",
-        "Excess Return over T-Bill %",
-        "Beats T-Bill",
-        "Beats NIFTY 50"
-    ]].round(2)
+fig = px.scatter(
+    ef_df,
+    x="Volatility %",
+    y="Return %",
+    color="Sharpe Ratio",
+    title="Efficient Frontier (Random Portfolios)",
+    color_continuous_scale="Viridis"
 )
+
+st.plotly_chart(fig, use_container_width=True)
+
+
+# =====================================================
+# FINAL INSIGHTS
+# =====================================================
+st.success(f"""
+### 🔍 Final Investment Summary – {focus_portfolio}
+
+✔ **Risk–Return Profile:** {"High Growth" if focus_row['Volatility %'] > 20 else "Balanced / Stable"}  
+✔ **Volatility Level:** {focus_row['Volatility %']:.2f}%  
+✔ **Maximum Drawdown:** {focus_row['Max Drawdown %']:.2f}%  
+✔ **Risk-Adjusted Performance (Sharpe):** {focus_row['Sharpe Ratio']:.2f}
+
+📌 *This portfolio aligns well with its intended risk profile and investment horizon.*
+""")
