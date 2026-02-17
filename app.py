@@ -3,6 +3,11 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 from scipy.stats import norm
+import warnings
+from pandas.errors import PerformanceWarning
+
+warnings.simplefilter("ignore", category=PerformanceWarning)
+
 
 # =====================================================
 # PAGE CONFIG
@@ -35,9 +40,30 @@ var_level = {"90%": 10, "95%": 5, "99%": 1}[var_conf]
 # =====================================================
 @st.cache
 def load_data():
-    df = pd.read_excel("Opening_Closing_Stock_Data_2021_2025.xlsx")
+    raw = pd.read_excel(
+        "Opening_Closing_Stock_Data_2021_2025.xlsx",
+        header=None
+    )
+
+    # Find rows where first column == 'Asset'
+    header_rows = raw[raw[0] == "Asset"].index
+
+    all_tables = []
+
+    for i in range(len(header_rows)):
+        start = header_rows[i]
+        end = header_rows[i + 1] if i + 1 < len(header_rows) else len(raw)
+
+        temp = raw.iloc[start:end].copy()
+        temp.columns = temp.iloc[0]      # set header
+        temp = temp.iloc[1:]             # drop header row
+        all_tables.append(temp)
+
+    df = pd.concat(all_tables, ignore_index=True)
+
+    # Clean
     df.columns = df.columns.str.strip()
-    df["Asset"] = df["Asset"].str.strip()
+    df["Asset"] = df["Asset"].astype(str).str.strip()
 
     for col in df.columns:
         if col != "Asset":
