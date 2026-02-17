@@ -49,6 +49,28 @@ df = load_data()
 years = ["2021", "2022", "2023", "2024", "2025"]
 
 # =====================================================
+# ASSET CLASS MAPPING
+# =====================================================
+ASSET_CLASS_MAP = {
+    "HBL Power": "Equity", "Mazagon Dock": "Equity", "KPIT Tech": "Equity",
+    "Trent Ltd": "Equity", "Persistent": "Equity", "Cummins India": "Equity",
+    "Reliance": "Equity", "TCS": "Equity", "HDFC Bank": "Equity",
+
+    "Gold BeES (ETF)": "ETF",
+
+    "Embassy Office Parks REIT": "REIT",
+    "Mindspace Business Parks REIT": "REIT",
+
+    "IRB InvIT Fund": "InvIT",
+
+    "India Grid Trust": "Bonds",
+    "REC Bond": "Bonds",
+    "NABARD Bond": "Bonds",
+
+    "Nifty 50 Index": "Index"
+}
+
+# =====================================================
 # ANNUAL RETURNS
 # =====================================================
 annual_returns = {}
@@ -68,9 +90,77 @@ for _, row in df.iterrows():
     annual_returns[asset] = returns
 
 annual_returns_df = pd.DataFrame(annual_returns, index=years).T
+# 🔒 Force numeric dtype for year columns (CRITICAL)
+annual_returns_df[years] = (
+    annual_returns_df[years]
+    .apply(pd.to_numeric, errors="coerce")
+    .fillna(0.0)
+)
+annual_returns_df["Asset Class"] = annual_returns_df.index.map(ASSET_CLASS_MAP)
 
 st.subheader("📅 Annual Asset Returns (%)")
-st.dataframe((annual_returns_df * 100).round(2))
+display_df = annual_returns_df.copy()
+display_df[years] = (display_df[years] * 100).round(2)
+
+# ✅ FIX: Make index a proper column
+display_df = display_df.reset_index()
+display_df = display_df.rename(columns={"index": "Assets"})
+st.dataframe(display_df)
+
+# =====================================================
+# ASSET CLASS ANALYSIS (⭐ NEW ⭐)
+# =====================================================
+st.subheader("🏷 Asset Class Performance Comparison")
+
+asset_class_returns = annual_returns_df.groupby("Asset Class")[years].mean()
+
+asset_metrics = []
+
+for cls in asset_class_returns.index:
+    r = asset_class_returns.loc[cls]
+    mean_r = r.mean()
+    vol = r.std()
+    sharpe = (mean_r - rf_rate) / vol if vol > 0 else 0
+    cumulative = (1 + r).cumprod()
+    max_dd = ((cumulative / cumulative.cummax()) - 1).min()
+    CAGR = cumulative.iloc[-1] ** (1 / len(r)) - 1
+
+    asset_metrics.append([
+        cls, mean_r*100, CAGR*100, vol*100, max_dd*100, sharpe
+    ])
+
+asset_metrics_df = pd.DataFrame(asset_metrics, columns=[
+    "Asset Class", "Avg Return %", "CAGR %", "Volatility %",
+    "Max Drawdown %", "Sharpe Ratio"
+])
+
+st.dataframe(asset_metrics_df.round(2))
+
+asset_metrics_df["Size"] = asset_metrics_df["Sharpe Ratio"].abs().clip(lower=0.1)
+
+fig = px.scatter(
+    asset_metrics_df,
+    x="Volatility %",
+    y="Avg Return %",
+    size="Size",
+    color="Asset Class",
+    title="Asset Class Risk–Return Comparison"
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+best_asset = asset_metrics_df.loc[
+    asset_metrics_df["Sharpe Ratio"].idxmax()
+]
+
+st.success(f"""
+🧠 **Best Asset Class (Risk-Adjusted)**  
+**{best_asset['Asset Class']}**
+
+• Avg Return: {best_asset['Avg Return %']:.2f}%  
+• Volatility: {best_asset['Volatility %']:.2f}%  
+• Sharpe Ratio: {best_asset['Sharpe Ratio']:.2f}
+""")
 
 # =====================================================
 # PORTFOLIOS
@@ -111,7 +201,8 @@ for p in selected:
     total = np.zeros(len(years))
     for asset, w in PORTFOLIOS[p].items():
         if asset in annual_returns_df.index:
-            total += annual_returns_df.loc[asset].values * w
+            asset_returns = annual_returns_df.loc[asset, years].to_numpy(dtype=float)
+            total += asset_returns * w
     portfolio_data[p] = total
 
 portfolio_df = pd.DataFrame(portfolio_data, index=years).copy()
@@ -189,7 +280,7 @@ st.warning(f"🚀 Highest Return: **{high_return['Portfolio']}**")
 # =====================================================
 # RISK–RETURN SCATTER (NaN-safe)
 # =====================================================
-metrics_df["Sharpe Size"] = metrics_df["Sharpe Ratio"].clip(lower=0.01)
+metrics_df["Sharpe Size"] = metrics_df["Sharpe Ratio"].abs().clip(lower=0.1)
 
 fig = px.scatter(
     metrics_df,
@@ -372,27 +463,35 @@ st.info(f"""
 """)
 
 # =====================================================
-# EFFICIENT FRONTIER
+# EFFICIENT FRONTIER (FIXED & CORRECT)
 # =====================================================
 st.subheader("📈 Efficient Frontier")
 
-assets = annual_returns_df.loc[
-    annual_returns_df.index.intersection(
-        list(set().union(*[PORTFOLIOS[p].keys() for p in selected]))
-    )
-]
+# Assets used in selected portfolios
+selected_assets = list(
+    set().union(*[PORTFOLIOS[p].keys() for p in selected])
+)
 
-returns = assets.mean(axis=1)
-cov_matrix = assets.T.cov()
+assets_df = annual_returns_df.loc[
+    annual_returns_df.index.intersection(selected_assets),
+    years
+].astype(float)
 
+# Convert to NumPy
+returns_matrix = assets_df.values
+mean_returns = returns_matrix.mean(axis=1)
+cov_matrix = np.cov(returns_matrix)
+
+n_assets = len(mean_returns)
 n_ports = 3000
+
 results = np.zeros((n_ports, 3))
 
 for i in range(n_ports):
-    weights = np.random.random(len(returns))
+    weights = np.random.random(n_assets)
     weights /= np.sum(weights)
 
-    port_return = np.dot(weights, returns)
+    port_return = np.dot(weights, mean_returns)
     port_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
     sharpe = (port_return - rf_rate) / port_vol if port_vol > 0 else 0
 
@@ -413,7 +512,6 @@ fig = px.scatter(
 )
 
 st.plotly_chart(fig, use_container_width=True)
-
 
 # =====================================================
 # FINAL INSIGHTS
