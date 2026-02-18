@@ -148,16 +148,15 @@ for cls in asset_class_returns.index:
     vol = r.std()
     sharpe = (mean_r - rf_rate) / vol if vol > 0 else 0
     cumulative = (1 + r).cumprod()
-    max_dd = ((cumulative / cumulative.cummax()) - 1).min()
+    # max_dd = ((cumulative / cumulative.cummax()) - 1).min()
     CAGR = cumulative.iloc[-1] ** (1 / len(r)) - 1
 
     asset_metrics.append([
-        cls, mean_r*100, CAGR*100, vol*100, max_dd*100, sharpe
+        cls, mean_r*100, CAGR*100, vol*100, sharpe
     ])
 
 asset_metrics_df = pd.DataFrame(asset_metrics, columns=[
-    "Asset Class", "Avg Return %", "CAGR %", "Volatility %",
-    "Max Drawdown %", "Sharpe Ratio"
+    "Asset Class", "Avg Return %", "CAGR %", "Volatility %", "Sharpe Ratio"
 ])
 
 st.dataframe(asset_metrics_df.round(2))
@@ -193,18 +192,24 @@ st.success(f"""
 # =====================================================
 PORTFOLIOS = {
     "Young Investor": {
-        "HBL Power": 0.15, "Mazagon Dock": 0.15, "KPIT Tech": 0.15,
-        "Trent Ltd": 0.15, "Persistent": 0.15,
-        "Reliance": 0.10, "Gold BeES (ETF)": 0.15
+        "HBL Power": 0.12, "Mazagon Dock": 0.12, "KPIT Tech": 0.12,
+        "Trent Ltd": 0.12, "Persistent": 0.12,
+        "Reliance": 0.10, "Gold BeES (ETF)": 0.10
     },
     "Middle-aged Investor": {
-        "Reliance": 0.20, "TCS": 0.20, "HDFC Bank": 0.20,
-        "Persistent": 0.15, "KPIT Tech": 0.15,
-        "Gold BeES (ETF)": 0.10
+        "Reliance": 0.18, "TCS": 0.18, "HDFC Bank": 0.18,
+        "Persistent": 0.12, "KPIT Tech": 0.12,
+        "Gold BeES (ETF)": 0.10, "Embassy Office Parks REIT": 0.06,
+    "REC Bond": 0.06
     },
     "Senior Investor": {
-        "HDFC Bank": 0.30, "TCS": 0.25,
-        "Reliance": 0.20, "Gold BeES (ETF)": 0.25
+    "HDFC Bank": 0.20,
+    "TCS": 0.15,
+    "Reliance": 0.15,
+    "Gold BeES (ETF)": 0.15,
+    "REC Bond": 0.15,
+    "NABARD Bond": 0.10,
+    "India Grid Trust": 0.10
     }
 }
 
@@ -217,6 +222,92 @@ selected = st.sidebar.multiselect(
 if not selected:
     st.warning("⚠ Please select at least one portfolio.")
     st.stop()
+
+# =====================================================
+# PORTFOLIO WEIGHTS TABLE
+# =====================================================
+
+st.subheader("⚖️ Portfolio Asset Weights")
+
+# Define MASTER ASSET LIST (all possible assets in system)
+MASTER_ASSETS = sorted(
+    set(asset for p in PORTFOLIOS.values() for asset in p.keys())
+)
+
+# Build weight table
+weights_df = pd.DataFrame(index=MASTER_ASSETS)
+
+for portfolio, assets in PORTFOLIOS.items():
+    weights_df[portfolio] = [
+        assets.get(asset, 0) * 100 for asset in MASTER_ASSETS
+    ]
+
+# Add total allocation column (for sorting)
+weights_df["Total Allocation (%)"] = weights_df.sum(axis=1)
+
+# Sort assets by importance
+weights_df = weights_df.sort_values(
+    by="Total Allocation (%)",
+    ascending=False
+)
+
+# Reset index for display
+weights_df = weights_df.reset_index()
+weights_df = weights_df.rename(columns={"index": "Asset"})
+
+# Display
+st.dataframe(weights_df.round(2))
+
+# =====================================================
+# STACKED BAR CHART – PORTFOLIO COMPOSITION
+# =====================================================
+st.subheader("📊 Portfolio Asset Allocation (Stacked)")
+
+stack_df = weights_df.drop(columns=["Total Allocation (%)"])
+stack_df = stack_df.melt(
+    id_vars="Asset",
+    var_name="Portfolio",
+    value_name="Weight %"
+)
+
+stack_df = stack_df[stack_df["Weight %"] > 0]
+
+fig = px.bar(
+    stack_df,
+    x="Portfolio",
+    y="Weight %",
+    color="Asset",
+    title="Portfolio Asset Composition",
+    text_auto=True
+)
+
+st.plotly_chart(fig, use_container_width=True)
+
+# =====================================================
+# PIE CHART – INDIVIDUAL PORTFOLIOS
+# =====================================================
+st.subheader("🥧 Individual Portfolio Allocation")
+
+pie_portfolio = st.selectbox(
+    "Select Portfolio for Pie Chart",
+    list(PORTFOLIOS.keys()),
+    key="pie_select"
+)
+
+pie_data = pd.DataFrame({
+    "Asset": list(PORTFOLIOS[pie_portfolio].keys()),
+    "Weight %": [v * 100 for v in PORTFOLIOS[pie_portfolio].values()]
+})
+
+fig = px.pie(
+    pie_data,
+    names="Asset",
+    values="Weight %",
+    title=f"{pie_portfolio} – Asset Allocation",
+    hole=0.4
+)
+
+st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================
 # PORTFOLIO RETURNS
@@ -255,7 +346,7 @@ for p in portfolio_df.columns:
     ES = r[r <= VaR].mean()
 
     cumulative = (1 + r).cumprod()
-    max_dd = ((cumulative / cumulative.cummax()) - 1).min()
+    # max_dd = ((cumulative / cumulative.cummax()) - 1).min()
     CAGR = cumulative.iloc[-1] ** (1 / len(r)) - 1
 
     metrics.append([
@@ -263,7 +354,6 @@ for p in portfolio_df.columns:
         mean_r * 100,
         CAGR * 100,
         vol * 100,
-        max_dd * 100,
         sharpe,
         sortino,
         VaR * 100,
@@ -272,8 +362,7 @@ for p in portfolio_df.columns:
 
 metrics_df = pd.DataFrame(metrics, columns=[
     "Portfolio", "Avg Return %", "CAGR %",
-    "Volatility %", "Max Drawdown %",
-    "Sharpe Ratio", "Sortino Ratio",
+    "Volatility %", "Sharpe Ratio", "Sortino Ratio",
     f"VaR ({var_conf}) %", "Expected Shortfall %"
 ])
 
@@ -284,11 +373,11 @@ st.subheader("📌 KPI Comparison")
 
 for _, row in metrics_df.iterrows():
     st.markdown(f"### {row['Portfolio']}")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Avg Return (%)", f"{row['Avg Return %']:.2f}")
     c2.metric("CAGR (%)", f"{row['CAGR %']:.2f}")
     c3.metric("Volatility (%)", f"{row['Volatility %']:.2f}")
-    c4.metric("Max Drawdown (%)", f"{row['Max Drawdown %']:.2f}")
+    # c4.metric("Max Drawdown (%)", f"{row['Max Drawdown %']:.2f}")
 
 # =====================================================
 # AUTO RECOMMENDATION
@@ -364,95 +453,109 @@ if sigma > 0:
 # =====================================================
 # MONTE CARLO SIMULATION
 # =====================================================
-st.subheader("📈 Monte Carlo Simulation – Future Portfolio Forecast")
+# st.subheader("📈 Monte Carlo Simulation – Future Portfolio Forecast")
 
-n_simulations = st.slider(
-    "Number of Simulations", 500, 5000, 2000, step=500
-)
-n_years = st.slider(
-    "Forecast Years", 1, 10, 5
-)
+# n_simulations = st.slider(
+#     "Number of Simulations", 500, 5000, 2000, step=500
+# )
+# n_years = st.slider(
+#     "Forecast Years", 1, 10, 5
+# )
 
-mean_return = r.mean()
-volatility = r.std()
+# mean_return = r.mean()
+# volatility = r.std()
 
-simulated_returns = np.random.normal(
-    mean_return,
-    volatility,
-    size=(n_simulations, n_years)
-)
+# simulated_returns = np.random.normal(
+#     mean_return,
+#     volatility,
+#     size=(n_simulations, n_years)
+# )
 
-simulated_cumulative = (1 + simulated_returns).cumprod(axis=1)
+# simulated_cumulative = (1 + simulated_returns).cumprod(axis=1)
 
-# Convert to DataFrame for plotting
-sim_df = pd.DataFrame(
-    simulated_cumulative.T,
-    columns=[f"Sim {i}" for i in range(simulated_cumulative.shape[0])]
-).copy()
+# # Convert to DataFrame for plotting
+# sim_df = pd.DataFrame(
+#     simulated_cumulative.T,
+#     columns=[f"Sim {i}" for i in range(simulated_cumulative.shape[0])]
+# ).copy()
 
-fig = px.line(
-    sim_df,
-    title=f"Monte Carlo Simulation – {focus_portfolio}",
-    labels={"value": "Portfolio Value", "index": "Year"}
-)
-fig.update_traces(line=dict(width=1), opacity=0.1)
-st.plotly_chart(fig)
+# fig = px.line(
+#     sim_df,
+#     title=f"Monte Carlo Simulation – {focus_portfolio}",
+#     labels={"value": "Portfolio Value", "index": "Year"}
+# )
+# fig.update_traces(line=dict(width=1), opacity=0.1)
+# st.plotly_chart(fig)
 
-# Monte Carlo Insights
-final_values = simulated_cumulative[:, -1]
+# # Monte Carlo Insights
+# final_values = simulated_cumulative[:, -1]
 
-st.info(f"""
-📊 **Monte Carlo Insights ({n_years} Years)**  
-• Expected Portfolio Value: **{final_values.mean():.2f}x**  
-• Worst 5% Outcome: **{np.percentile(final_values, 5):.2f}x**  
-• Best 95% Outcome: **{np.percentile(final_values, 95):.2f}x**
-""")
+# st.info(f"""
+# 📊 **Monte Carlo Insights ({n_years} Years)**  
+# • Expected Portfolio Value: **{final_values.mean():.2f}x**  
+# • Worst 5% Outcome: **{np.percentile(final_values, 5):.2f}x**  
+# • Best 95% Outcome: **{np.percentile(final_values, 95):.2f}x**
+# """)
+
+# # =====================================================
+# # CONFIDENCE CONE (MONTE CARLO)
+# # =====================================================
+# st.subheader("📉 Monte Carlo Confidence Cone")
+
+# percentiles = [5, 25, 50, 75, 95]
+
+# percentile_values = np.percentile(simulated_cumulative, percentiles, axis=0)
+
+# cone_df = pd.DataFrame(
+#     percentile_values.T,
+#     columns=[f"P{p}" for p in percentiles]
+# ).copy()
+
+# cone_df["Year"] = range(1, n_years + 1)
+
+# fig = px.line(
+#     cone_df,
+#     x="Year",
+#     y=[f"P{p}" for p in percentiles],
+#     title=f"Confidence Cone – {focus_portfolio}",
+#     labels={"value": "Portfolio Value", "variable": "Percentile"}
+# )
+
+# st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================
-# CONFIDENCE CONE (MONTE CARLO)
-# =====================================================
-st.subheader("📉 Monte Carlo Confidence Cone")
-
-percentiles = [5, 25, 50, 75, 95]
-
-percentile_values = np.percentile(simulated_cumulative, percentiles, axis=0)
-
-cone_df = pd.DataFrame(
-    percentile_values.T,
-    columns=[f"P{p}" for p in percentiles]
-).copy()
-
-cone_df["Year"] = range(1, n_years + 1)
-
-fig = px.line(
-    cone_df,
-    x="Year",
-    y=[f"P{p}" for p in percentiles],
-    title=f"Confidence Cone – {focus_portfolio}",
-    labels={"value": "Portfolio Value", "variable": "Percentile"}
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# =====================================================
-# CAPM & BETA ANALYSIS
+# CAPM & BETA ANALYSIS (CORRECT MARKET-BASED)
 # =====================================================
 st.subheader("🧮 CAPM & Beta Analysis")
 
-# Market proxy (average portfolio return)
-market_return = portfolio_df.mean(axis=1)
+# ✅ Use Nifty 50 as Market Proxy
+if "Nifty 50 Index" not in annual_returns_df.index:
+    st.error("❌ Nifty 50 Index data not found for Beta calculation.")
+    st.stop()
 
-covariance = np.cov(r, market_return)[0][1]
-market_variance = np.var(market_return)
+market_returns = annual_returns_df.loc["Nifty 50 Index", years].astype(float)
+portfolio_returns = portfolio_df[focus_portfolio].astype(float)
+
+# Align lengths (safety)
+market_returns = market_returns.values
+portfolio_returns = portfolio_returns.values
+
+# ✅ Proper Beta formula
+covariance = np.cov(portfolio_returns, market_returns)[0, 1]
+market_variance = np.var(market_returns)
 
 beta = covariance / market_variance if market_variance > 0 else 0
 
-expected_capm_return = rf_rate + beta * (market_return.mean() - rf_rate)
-
-actual_return = r.mean()
+# CAPM Expected Return
+expected_capm_return = rf_rate + beta * (market_returns.mean() - rf_rate)
+actual_return = portfolio_returns.mean()
 
 capm_df = pd.DataFrame({
-    "Metric": ["Beta", "Expected Return (CAPM %)", "Actual Return (%)"],
+    "Metric": [
+        "Beta",
+        "Expected Return (CAPM %)",
+        "Actual Return (%)"
+    ],
     "Value": [
         round(beta, 3),
         round(expected_capm_return * 100, 2),
@@ -489,55 +592,114 @@ st.info(f"""
 """)
 
 # =====================================================
-# EFFICIENT FRONTIER (FIXED & CORRECT)
+# BETA COMPARISON (Portfolio vs Market)
 # =====================================================
-st.subheader("📈 Efficient Frontier")
+st.subheader("📐 Portfolio Beta vs Market Beta")
 
-# Assets used in selected portfolios
-selected_assets = list(
-    set().union(*[PORTFOLIOS[p].keys() for p in selected])
+beta_df = pd.DataFrame({
+    "Type": ["Market", focus_portfolio],
+    "Beta": [1.0, beta]
+})
+
+fig = px.bar(
+    beta_df,
+    x="Type",
+    y="Beta",
+    color="Type",
+    text="Beta",
+    title="Systematic Risk Comparison (Beta)"
 )
 
-assets_df = annual_returns_df.loc[
-    annual_returns_df.index.intersection(selected_assets),
-    years
-].astype(float)
+fig.update_traces(texttemplate='%{text:.2f}', textposition='outside')
+fig.add_hline(y=1, line_dash="dash", annotation_text="Market Beta = 1")
 
-# Convert to NumPy
-returns_matrix = assets_df.values
-mean_returns = returns_matrix.mean(axis=1)
-cov_matrix = np.cov(returns_matrix)
+st.plotly_chart(fig, use_container_width=True)
 
-n_assets = len(mean_returns)
-n_ports = 3000
+# Interpretation
+if beta > 1:
+    st.warning("📈 Portfolio is MORE volatile than the market (Aggressive)")
+elif beta < 1:
+    st.success("🛡 Portfolio is LESS volatile than the market (Defensive)")
+else:
+    st.info("⚖ Portfolio risk matches the market")
 
-results = np.zeros((n_ports, 3))
+# =====================================================
+# PORTFOLIO vs MARKET REGRESSION (CAPM LINE)
+# =====================================================
+st.subheader("📉 Portfolio vs Market Regression (CAPM)")
 
-for i in range(n_ports):
-    weights = np.random.random(n_assets)
-    weights /= np.sum(weights)
-
-    port_return = np.dot(weights, mean_returns)
-    port_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
-    sharpe = (port_return - rf_rate) / port_vol if port_vol > 0 else 0
-
-    results[i] = [port_vol * 100, port_return * 100, sharpe]
-
-ef_df = pd.DataFrame(
-    results,
-    columns=["Volatility %", "Return %", "Sharpe Ratio"]
-)
+reg_df = pd.DataFrame({
+    "Market Return (%)": market_returns * 100,
+    "Portfolio Return (%)": portfolio_returns * 100
+})
 
 fig = px.scatter(
-    ef_df,
-    x="Volatility %",
-    y="Return %",
-    color="Sharpe Ratio",
-    title="Efficient Frontier (Random Portfolios)",
-    color_continuous_scale="Viridis"
+    reg_df,
+    x="Market Return (%)",
+    y="Portfolio Return (%)",
+    trendline="ols",
+    title=f"{focus_portfolio}: Portfolio vs Market Returns"
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
+st.info("""
+📌 **Interpretation**  
+• Slope of regression line = **Beta**  
+• Steeper line → higher market sensitivity  
+• Flatter line → defensive portfolio
+""")
+
+# =====================================================
+# EFFICIENT FRONTIER (FIXED & CORRECT)
+# =====================================================
+# st.subheader("📈 Efficient Frontier")
+
+# # Assets used in selected portfolios
+# selected_assets = list(
+#     set().union(*[PORTFOLIOS[p].keys() for p in selected])
+# )
+
+# assets_df = annual_returns_df.loc[
+#     annual_returns_df.index.intersection(selected_assets),
+#     years
+# ].astype(float)
+
+# # Convert to NumPy
+# returns_matrix = assets_df.values
+# mean_returns = returns_matrix.mean(axis=1)
+# cov_matrix = np.cov(returns_matrix)
+
+# n_assets = len(mean_returns)
+# n_ports = 3000
+
+# results = np.zeros((n_ports, 3))
+
+# for i in range(n_ports):
+#     weights = np.random.random(n_assets)
+#     weights /= np.sum(weights)
+
+#     port_return = np.dot(weights, mean_returns)
+#     port_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+#     sharpe = (port_return - rf_rate) / port_vol if port_vol > 0 else 0
+
+#     results[i] = [port_vol * 100, port_return * 100, sharpe]
+
+# ef_df = pd.DataFrame(
+#     results,
+#     columns=["Volatility %", "Return %", "Sharpe Ratio"]
+# )
+
+# fig = px.scatter(
+#     ef_df,
+#     x="Volatility %",
+#     y="Return %",
+#     color="Sharpe Ratio",
+#     title="Efficient Frontier (Random Portfolios)",
+#     color_continuous_scale="Viridis"
+# )
+
+# st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================
 # FINAL INSIGHTS
@@ -547,7 +709,6 @@ st.success(f"""
 
 ✔ **Risk–Return Profile:** {"High Growth" if focus_row['Volatility %'] > 20 else "Balanced / Stable"}  
 ✔ **Volatility Level:** {focus_row['Volatility %']:.2f}%  
-✔ **Maximum Drawdown:** {focus_row['Max Drawdown %']:.2f}%  
 ✔ **Risk-Adjusted Performance (Sharpe):** {focus_row['Sharpe Ratio']:.2f}
 
 📌 *This portfolio aligns well with its intended risk profile and investment horizon.*
